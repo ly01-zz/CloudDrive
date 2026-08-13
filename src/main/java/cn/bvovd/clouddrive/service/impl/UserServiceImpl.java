@@ -221,7 +221,6 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         userVo.setPhone(user.getPhone());
         userVo.setNickname(user.getNickname());
         userVo.setAvatarUrl(user.getAvatarUrl());
-        userVo.setRole(user.getRole());
         userVo.setTotalSpace(user.getTotalSpace());
         userVo.setUsedSpace(user.getUsedSpace());
         userVo.setMonthlyDownloadLimit(user.getMonthlyDownloadLimit());

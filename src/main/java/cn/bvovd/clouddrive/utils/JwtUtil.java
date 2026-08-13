@@ -72,11 +72,11 @@ public class JwtUtil {
         return claims.get("phone", String.class);
     }
     /**
-     * 从 Token 中获取身份（role claim）
+     * 从 Token 中获取身份
      */
     public Integer getRoleFromToken(String token) {
         Claims claims = parseToken(token);
-        return claims.get("role", Integer.class);
+        return Integer.parseInt(claims.getSubject());
     }
 
     /**
