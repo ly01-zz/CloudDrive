@@ -18,7 +18,8 @@ public class WebConfig implements WebMvcConfigurer {
                 .addPathPatterns("/**")                              // 拦截所有请求
                 .excludePathPatterns(
                         "/user/register",                           // 注册放行
-                        "/user/login"                               // 登录放行
+                        "/user/login",                              // 登录放行
+                        "/share/info/**"                            // 查看分享信息放行（无需登录）
                 );
     }
 }

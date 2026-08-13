@@ -53,6 +53,17 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     }
 
     @Override
+    public User getUserInfo(Long userId) {
+        User user = this.getById(userId);
+        if (user == null) {
+            throw new BusinessException("用户不存在");
+        }
+        // 脱敏：密码哈希不返回前端
+        user.setPasswordHash(null);
+        return user;
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void disableUser(Long userId, Long adminId) {
         // 1. 不能禁用自己

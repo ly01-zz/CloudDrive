@@ -26,4 +26,7 @@ public interface UserService extends IService<User> {
 
     /** 获取所有用户列表（管理员） */
     java.util.List<User> getAllUsers();
+
+    /** 获取当前登录用户的完整信息（脱敏），用于前端刷新空间/流量等数据 */
+    User getUserInfo(Long userId);
 }

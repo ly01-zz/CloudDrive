@@ -34,6 +34,11 @@ public class UserController {
         LoginVo vo = userService.login(request, httpRequest);
         return Result.success("登录成功", vo);
     }
+    @GetMapping("/info")
+    public Result getUserInfo() {
+        Long userId = UserContext.getUserId();
+        return Result.success("获取成功", userService.getUserInfo(userId));
+    }
     @PatchMapping("/update")
     public Result update(@Valid @RequestBody UpdateProfileRequest update,HttpServletRequest request){
         Long currentUserId = UserContext.getUserId();

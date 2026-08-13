@@ -31,6 +31,9 @@ public class DownloadLog {
     @TableField("user_agent")
     private String userAgent;
 
+    @TableField("share_code")
+    private String shareCode;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 }

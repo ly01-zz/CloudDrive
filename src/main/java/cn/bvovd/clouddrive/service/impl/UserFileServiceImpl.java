@@ -29,6 +29,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URL;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.TreeMap;
@@ -457,5 +458,202 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         folder.setDownloadCount(0);
 
         this.save(folder);
+    }
+
+    /**
+     * 逻辑删除（移入回收站）
+     * 文件夹会级联删除其所有子孙文件
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteToRecycle(Long userId, Long fileId) {
+        // getById 自动过滤已逻辑删除的记录（回收站中的无法再次删除）
+        UserFile file = this.getById(fileId);
+        if (file == null) {
+            throw new BusinessException("文件不存在或已在回收站中");
+        }
+        if (!file.getUserId().equals(userId)) {
+            throw new BusinessException("无权操作此文件");
+        }
+
+        // 收集自身 + 所有未删除的子孙文件 ID（文件夹级联）
+        List<Long> ids = new ArrayList<>();
+        ids.add(fileId);
+        collectDescendants(userId, fileId, ids);
+
+        // MP 逻辑删除：自动转换为 UPDATE files SET deleted_at = NOW() WHERE id IN (...)
+        this.removeByIds(ids);
+        log.info("逻辑删除成功，用户：{}，文件ID：{}，级联数量：{}", userId, fileId, ids.size());
+    }
+
+    /**
+     * 永久删除（物理删除）
+     * 仅回收站中的文件可永久删除；文件夹会级联删除其所有子孙
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deletePermanently(Long userId, Long fileId) {
+        // 含已删除记录一起查询（getById 会过滤回收站数据，故用自定义 SQL）
+        UserFile file = userFileMapper.selectIncludingDeleted(fileId, userId);
+        if (file == null) {
+            throw new BusinessException("文件不存在");
+        }
+        if (file.getDeletedAt() == null) {
+            throw new BusinessException("仅回收站中的文件可永久删除，请先删除至回收站");
+        }
+
+        // 递归收集自身 + 所有子孙 ID（含已逻辑删除的，用 WITH RECURSIVE 一次查询）
+        List<Long> ids = userFileMapper.selectDescendantIdsIncludingDeleted(fileId, userId);
+
+        // 1. 先删除 COS 存储对象（文件夹无 storagePath 自动跳过）
+        deleteCosObjects(ids);
+
+        // 2. 物理删除数据库记录（自定义 SQL，绕过逻辑删除拦截器）
+        userFileMapper.physicalDeleteByIds(ids);
+        log.info("永久删除成功，用户：{}，文件ID：{}，级联数量：{}", userId, fileId, ids.size());
+    }
+
+    /**
+     * 批量删除 COS 存储对象
+     * 尽力而为：单个对象删除失败仅记录日志，不阻断数据库删除（避免删除操作永远失败）
+     */
+    private void deleteCosObjects(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return;
+        List<String> paths = userFileMapper.selectStoragePathsByIds(ids);
+        for (String path : paths) {
+            if (path == null || path.trim().isEmpty()) continue; // 文件夹没有物理路径
+            try {
+                cosClient.deleteObject(cosProperties.getBucketName(), path);
+                log.info("COS 对象已删除：{}", path);
+            } catch (Exception e) {
+                log.warn("COS 对象删除失败：{}，原因：{}", path, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 回收站列表（含已逻辑删除的文件），按删除时间倒序
+     */
+    @Override
+    public List<UserFile> listRecycle(Long userId) {
+        // 自定义 SQL：wrapper 查询会被 MP 逻辑删除拦截器追加 deleted_at IS NULL 导致查不到
+        return userFileMapper.selectRecycleList(userId);
+    }
+
+    /**
+     * 恢复文件（移出回收站）
+     * - 文件夹级联恢复其所有子孙
+     * - 父文件夹若也在回收站则递归恢复祖先链（防止恢复后成为孤儿）
+     * - 父文件夹若已被永久删除，则恢复到根目录
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void restoreFile(Long userId, Long fileId) {
+        // 含已删除记录一起查询（getById 会过滤回收站数据）
+        UserFile file = userFileMapper.selectIncludingDeleted(fileId, userId);
+        if (file == null) {
+            throw new BusinessException("文件不存在");
+        }
+        if (file.getDeletedAt() == null) {
+            throw new BusinessException("文件不在回收站中");
+        }
+
+        // 1. 处理父目录：若在回收站则递归恢复祖先链；若已被永久删除则改挂根目录
+        Long parentId = file.getParentId();
+        if (parentId != null && parentId != 0) {
+            UserFile parent = userFileMapper.selectIncludingDeleted(parentId, userId);
+            if (parent == null) {
+                // 父文件夹已被永久删除 → 恢复到根目录，避免成为孤儿数据
+                log.info("父文件夹已被永久删除，文件恢复到根目录：fileId={}", fileId);
+                userFileMapper.updateParentId(fileId, userId, 0L);
+            } else if (parent.getDeletedAt() != null) {
+                // 父文件夹在回收站 → 递归恢复祖先链（仅恢复文件夹本身，不影响其他子孙）
+                restoreAncestors(userId, parent);
+            }
+        }
+
+        // 2. 检查目标目录下同名冲突（防止覆盖已有文件）
+        LambdaQueryWrapper<UserFile> nameWrapper = new LambdaQueryWrapper<>();
+        nameWrapper.eq(UserFile::getUserId, userId)
+                .eq(UserFile::getParentId, parentId)
+                .eq(UserFile::getName, file.getName())
+                .eq(UserFile::getIsFolder, file.getIsFolder())
+                .isNull(UserFile::getDeletedAt)
+                .ne(UserFile::getId, fileId);
+        if (this.count(nameWrapper) > 0) {
+            throw new BusinessException("目标目录已存在同名文件/文件夹，请先重命名后再恢复");
+        }
+
+        // 3. 恢复自身 + 所有子孙（含已逻辑删除的）
+        List<Long> ids = userFileMapper.selectDescendantIdsIncludingDeleted(fileId, userId);
+        userFileMapper.restoreByIds(ids, userId);
+        log.info("恢复成功，用户：{}，文件ID：{}，级联数量：{}", userId, fileId, ids.size());
+    }
+
+    /**
+     * 取消上传：清理未完成上传的文件记录并回滚预扣空间（前端直传 COS 失败时调用）
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void cancelUpload(Long userId, Long fileId) {
+        // 只允许取消 upload_status=0（上传中）的记录
+        UserFile pending = userFileMapper.selectPendingUpload(fileId, userId);
+        if (pending == null) {
+            log.warn("取消上传：记录不存在或已确认，userId={}，fileId={}", userId, fileId);
+            return; // 幂等处理
+        }
+
+        // 1. 清理可能已上传到 COS 的对象（上传失败时对象通常不存在，deleteObject 对不存在的 key 不报错）
+        if (pending.getStoragePath() != null && !pending.getStoragePath().isEmpty()) {
+            try {
+                cosClient.deleteObject(cosProperties.getBucketName(), pending.getStoragePath());
+                log.info("取消上传：COS 对象已清理：{}", pending.getStoragePath());
+            } catch (Exception e) {
+                log.warn("取消上传：COS 对象清理失败：{}，原因：{}", pending.getStoragePath(), e.getMessage());
+            }
+        }
+
+        // 2. 物理删除文件记录（未确认的记录直接删除，不走回收站）
+        userFileMapper.physicalDeleteByIds(List.of(fileId));
+
+        // 3. 回滚预扣的空间
+        User user = userMapper.selectByIdForUpdate(userId);
+        if (user != null) {
+            user.setUsedSpace(Math.max(0, user.getUsedSpace() - pending.getFileSize()));
+            userMapper.updateById(user);
+        }
+
+        log.info("取消上传成功，userId：{}，fileId：{}，回滚空间：{}字节",
+                userId, fileId, pending.getFileSize());
+    }
+
+    /**
+     * 递归恢复回收站中的祖先文件夹链（只恢复文件夹本身，防止恢复后的文件成为孤儿）
+     */
+    private void restoreAncestors(Long userId, UserFile folder) {
+        userFileMapper.restoreByIds(List.of(folder.getId()), userId);
+        Long parentId = folder.getParentId();
+        if (parentId != null && parentId != 0) {
+            UserFile parent = userFileMapper.selectIncludingDeleted(parentId, userId);
+            if (parent != null && parent.getDeletedAt() != null) {
+                restoreAncestors(userId, parent);
+            }
+        }
+    }
+
+    /**
+     * 递归收集某文件夹下所有未删除子孙文件的 ID（用于移入回收站）
+     */
+    private void collectDescendants(Long userId, Long parentId, List<Long> collector) {
+        LambdaQueryWrapper<UserFile> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(UserFile::getUserId, userId)
+                .eq(UserFile::getParentId, parentId); // MP 自动追加 deleted_at IS NULL
+        List<UserFile> children = this.list(wrapper);
+        for (UserFile child : children) {
+            collector.add(child.getId());
+            if (Boolean.TRUE.equals(child.getIsFolder())) {
+                collectDescendants(userId, child.getId(), collector);
+            }
+        }
     }
 }

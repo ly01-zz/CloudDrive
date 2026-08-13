@@ -59,15 +59,43 @@ public class UserFileController {
         DownloadUrlVo vo = userFileService.getDownloadUrl(userId, fileId);
         return Result.success("获取下载链接成功", vo);
     }
-    /** 删除文件-逻辑删除 **/
-    @DeleteMapping("/delect")
-    public Result delete(){
-
-        return Result.success("删除成功,文件已经移至回收站，15天后删除");
+    /** 逻辑删除（移入回收站），文件夹级联删除子孙 */
+    @DeleteMapping("/recycle/{fileId}")
+    public Result deleteToRecycle(@PathVariable Long fileId) {
+        Long userId = UserContext.getUserId();
+        userFileService.deleteToRecycle(userId, fileId);
+        return Result.success("删除成功，文件已移至回收站，15天后自动清理");
     }
-    /** 删除文件-永久删除 **/
-    @DeleteMapping("/")
-    public Result Pdelete(){
-        return Result.success("文件删除成功");
+
+    /** 永久删除（仅回收站中的文件生效），文件夹级联删除子孙 */
+    @DeleteMapping("/purge/{fileId}")
+    public Result deletePermanently(@PathVariable Long fileId) {
+        Long userId = UserContext.getUserId();
+        userFileService.deletePermanently(userId, fileId);
+        return Result.success("文件已永久删除");
+    }
+
+    /** 回收站列表 */
+    @GetMapping("/recycle")
+    public Result listRecycle() {
+        Long userId = UserContext.getUserId();
+        List<UserFile> recycleList = userFileService.listRecycle(userId);
+        return Result.success("获取成功", recycleList);
+    }
+
+    /** 恢复文件（移出回收站），文件夹级联恢复子孙 */
+    @PutMapping("/restore/{fileId}")
+    public Result restoreFile(@PathVariable Long fileId) {
+        Long userId = UserContext.getUserId();
+        userFileService.restoreFile(userId, fileId);
+        return Result.success("恢复成功");
+    }
+
+    /** 取消上传：清理未完成上传的记录并回滚空间（前端直传 COS 失败时调用） */
+    @DeleteMapping("/upload/pending/{fileId}")
+    public Result cancelUpload(@PathVariable Long fileId) {
+        Long userId = UserContext.getUserId();
+        userFileService.cancelUpload(userId, fileId);
+        return Result.success("已取消上传");
     }
 }
