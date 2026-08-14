@@ -4,7 +4,6 @@ import cn.bvovd.clouddrive.context.UserContext;
 import cn.bvovd.clouddrive.dto.SpaceApproveRequest;
 import cn.bvovd.clouddrive.entity.Result;
 import cn.bvovd.clouddrive.entity.SpaceApplication;
-import cn.bvovd.clouddrive.exception.BusinessException;
 import cn.bvovd.clouddrive.service.SpaceApplicationService;
 import cn.bvovd.clouddrive.vo.AdminSpaceApplicationVo;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -25,10 +24,7 @@ public class AdminSpaceController {
             @RequestParam(required = false) Integer status) {
 
         // 权限校验：当前用户必须是管理员（role=1）
-        Integer role = UserContext.getRole();
-        if (role == null || role != 1) {
-            throw new BusinessException("无权限访问，仅管理员可查看");
-        }
+        UserContext.requireAdmin();
 
         Page<SpaceApplication> pageParam = new Page<>(page, size);
         IPage<AdminSpaceApplicationVo> result = spaceApplicationService.queryAllApplications(pageParam, status);
@@ -46,10 +42,7 @@ public class AdminSpaceController {
             @Valid @RequestBody SpaceApproveRequest request) {
 
         // 权限校验：当前用户必须是管理员
-        Integer role = UserContext.getRole();
-        if (role == null || role != 1) {
-            throw new BusinessException("无权限操作，仅管理员可审批");
-        }
+        UserContext.requireAdmin();
 
         Long adminId = UserContext.getUserId();
         spaceApplicationService.approveApplication(applicationId, request, adminId);

@@ -32,8 +32,8 @@ public class UserFile {
     @TableField("storage_path")
     private String storagePath;
 
-    @TableField("file_md5")
-    private String fileMd5;
+    @TableField("file_sha256")
+    private String fileSha256;
 
     @TableField("mime_type")
     private String mimeType;

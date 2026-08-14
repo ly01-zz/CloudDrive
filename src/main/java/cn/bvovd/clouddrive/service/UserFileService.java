@@ -5,6 +5,8 @@ import cn.bvovd.clouddrive.dto.UploadCredentialRequest;
 import cn.bvovd.clouddrive.entity.UserFile;
 import cn.bvovd.clouddrive.vo.DownloadUrlVo;
 import cn.bvovd.clouddrive.vo.UploadCredentialVo;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
 
@@ -36,4 +38,6 @@ public interface UserFileService {
 
     /** 取消上传：清理未完成上传的文件记录并回滚预扣空间（前端直传失败时调用） */
     void cancelUpload(Long userId, Long fileId);
+
+    boolean checkSHAQuickUpload(@NotBlank String sha, @NotNull Long fileSize, @NotNull Long parentId, @NotBlank String fileName, String mimeType);
 }

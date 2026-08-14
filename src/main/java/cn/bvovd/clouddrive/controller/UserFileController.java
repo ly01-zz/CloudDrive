@@ -2,6 +2,7 @@ package cn.bvovd.clouddrive.controller;
 
 import cn.bvovd.clouddrive.context.UserContext;
 import cn.bvovd.clouddrive.dto.CreateFolderRequest;
+import cn.bvovd.clouddrive.dto.SHACheckRequest;
 import cn.bvovd.clouddrive.dto.UploadCredentialRequest;
 import cn.bvovd.clouddrive.entity.Result;
 import cn.bvovd.clouddrive.entity.UserFile;
@@ -12,7 +13,9 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/file")
@@ -37,6 +40,20 @@ public class UserFileController {
         return Result.success("获取成功", fileList);
     }
 
+    /** 秒传接口 **/
+    @PostMapping("/check")
+    public Result<Map<String,Object>> checkSHA(@RequestBody @Valid SHACheckRequest request){
+        boolean quick = userFileService.checkSHAQuickUpload(
+                request.getSHA(),
+                request.getFileSize(),
+                request.getParentId(),
+                request.getFileName(),
+                request.getMimeType()
+        );
+        Map<String, Object> result = new HashMap<>();
+        result.put("quickUpload", quick);
+        return Result.success(quick ? "秒传成功" : "需上传", result);
+    }
     /** 获取上传凭证（STS 临时密钥） */
     @PostMapping("/upload/credential")
     public Result getUploadCredential(@Valid @RequestBody UploadCredentialRequest request) {

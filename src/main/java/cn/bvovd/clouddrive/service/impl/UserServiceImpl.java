@@ -296,7 +296,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         rootFolder.setIsFolder(true);
         rootFolder.setFileSize(0L);
         rootFolder.setStoragePath(null);
-        rootFolder.setFileMd5(null);
+        rootFolder.setFileSha256(null);
         rootFolder.setMimeType(null);
         rootFolder.setDownloadCount(0);
         userFileMapper.insert(rootFolder);  // 也可以用 userFileService.save(rootFolder)

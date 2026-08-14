@@ -152,11 +152,47 @@ public class ShareServiceImpl extends ServiceImpl<ShareLinkMapper, ShareLink> im
         wrapper.eq(ShareLink::getUserId, userId)
                 .orderByDesc(ShareLink::getCreatedAt);
         List<ShareLink> links = shareLinkMapper.selectList(wrapper);
+
+        // 2. 组装 VO（不附带创建者信息）
+        return toShareInfoVos(links, false);
+    }
+
+    @Override
+    public List<ShareInfoVo> listAllShares() {
+        // 查询所有分享（管理员用，最新在前）
+        List<ShareLink> links = shareLinkMapper.selectList(
+                new LambdaQueryWrapper<ShareLink>().orderByDesc(ShareLink::getCreatedAt));
+        // 附带创建者信息
+        return toShareInfoVos(links, true);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void forceCancelShare(Long shareId) {
+        ShareLink link = shareLinkMapper.selectById(shareId);
+        if (link == null) {
+            throw new BusinessException("分享不存在");
+        }
+        if (link.getStatus() != 0) {
+            throw new BusinessException("该分享已失效，无需取消");
+        }
+        link.setStatus(2); // 已取消
+        shareLinkMapper.updateById(link);
+        log.info("管理员强制取消分享，分享ID：{}，操作人：{}", shareId, UserContext.getUserId());
+    }
+
+    /**
+     * 组装分享 VO 列表（listMyShares / listAllShares 共用）
+     *
+     * @param links       分享记录
+     * @param withCreator 是否附带创建者信息（管理员列表为 true）
+     */
+    private List<ShareInfoVo> toShareInfoVos(List<ShareLink> links, boolean withCreator) {
         if (links.isEmpty()) {
             return Collections.emptyList();
         }
 
-        // 2. 批量查询文件名（被删除的文件显示为"文件已删除"）
+        // 批量查询文件名（被删除的文件显示为"文件已删除"）
         List<Long> fileIds = links.stream()
                 .map(ShareLink::getFileId)
                 .distinct()
@@ -164,7 +200,18 @@ public class ShareServiceImpl extends ServiceImpl<ShareLinkMapper, ShareLink> im
         Map<Long, UserFile> fileMap = userFileMapper.selectBatchIds(fileIds).stream()
                 .collect(Collectors.toMap(UserFile::getId, Function.identity()));
 
-        // 3. 组装 VO
+        // 管理员列表额外附带创建者信息
+        Map<Long, User> userMap = Collections.emptyMap();
+        if (withCreator) {
+            List<Long> userIds = links.stream()
+                    .map(ShareLink::getUserId)
+                    .distinct()
+                    .collect(Collectors.toList());
+            userMap = userMapper.selectBatchIds(userIds).stream()
+                    .collect(Collectors.toMap(User::getId, Function.identity()));
+        }
+        Map<Long, User> finalUserMap = userMap;
+
         return links.stream().map(link -> {
             ShareInfoVo vo = new ShareInfoVo();
             vo.setId(link.getId());
@@ -185,6 +232,13 @@ public class ShareServiceImpl extends ServiceImpl<ShareLinkMapper, ShareLink> im
             vo.setMaxDownloadSizeDesc(link.getMaxDownloadSize() != null ? formatFileSize(link.getMaxDownloadSize()) : "无限制");
             vo.setStatus(link.getStatus());
             vo.setStatusDesc(getStatusDesc(link.getStatus()));
+            if (withCreator) {
+                User creator = finalUserMap.get(link.getUserId());
+                if (creator != null) {
+                    vo.setPhone(creator.getPhone());
+                    vo.setNickname(creator.getNickname());
+                }
+            }
             return vo;
         }).collect(Collectors.toList());
     }

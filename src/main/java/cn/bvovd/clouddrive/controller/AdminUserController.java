@@ -3,7 +3,6 @@ package cn.bvovd.clouddrive.controller;
 import cn.bvovd.clouddrive.context.UserContext;
 import cn.bvovd.clouddrive.entity.Result;
 import cn.bvovd.clouddrive.entity.User;
-import cn.bvovd.clouddrive.exception.BusinessException;
 import cn.bvovd.clouddrive.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -20,10 +19,7 @@ public class AdminUserController {
     @PutMapping("/{userId}/disable")
     public Result<String> disableUser(@PathVariable Long userId) {
         // 权限校验：必须是管理员
-        Integer role = UserContext.getRole();
-        if (role == null || role != 1) {
-            throw new BusinessException("无权限操作，仅管理员可执行");
-        }
+        UserContext.requireAdmin();
 
         Long currentAdminId = UserContext.getUserId();
         userService.disableUser(userId, currentAdminId);
@@ -35,10 +31,7 @@ public class AdminUserController {
      */
     @PutMapping("/{userId}/enable")
     public Result<String> enableUser(@PathVariable Long userId) {
-        Integer role = UserContext.getRole();
-        if (role == null || role != 1) {
-            throw new BusinessException("无权限操作，仅管理员可执行");
-        }
+        UserContext.requireAdmin();
 
         Long currentAdminId = UserContext.getUserId();
         userService.enableUser(userId, currentAdminId);
@@ -47,10 +40,7 @@ public class AdminUserController {
     // 获取所有用户信息（仅管理员）
     @GetMapping("/all")
     public Result<java.util.List<User>> all() {
-        Integer role = UserContext.getRole();
-        if (role == null || role != 1) {
-            throw new BusinessException("该用户没有权限！");
-        }
+        UserContext.requireAdmin();
         return Result.success("获取成功", userService.getAllUsers());
     }
 }

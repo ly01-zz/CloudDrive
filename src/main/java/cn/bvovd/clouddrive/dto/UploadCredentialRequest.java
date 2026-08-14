@@ -16,4 +16,6 @@ public class UploadCredentialRequest {
     private Long fileSize;
 
     private Long parentId = 0L; // 父文件夹ID，默认根目录
+
+    private String sha; // 文件 SHA-256（可选，前端计算后传入，用于秒传缓存）
 }

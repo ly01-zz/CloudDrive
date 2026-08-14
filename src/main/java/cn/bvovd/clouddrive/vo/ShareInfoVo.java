@@ -7,8 +7,10 @@ import java.time.LocalDateTime;
 public class ShareInfoVo {
     private Long id;                 // 分享ID（用于取消分享）
     private String shareCode;
-    private String extractCode;      // 提取码（仅"我的分享列表"返回，公开查看接口不返回）
+    private String extractCode;      // 提取码（仅"我的分享列表/管理列表"返回，公开查看接口不返回）
     private String fileName;
+    private String phone;            // 创建者手机号（仅管理员列表返回）
+    private String nickname;         // 创建者昵称（仅管理员列表返回）
     private Long fileSize;
     private String fileSizeDesc;
     private Integer shareType;          // 0-公开，1-私密

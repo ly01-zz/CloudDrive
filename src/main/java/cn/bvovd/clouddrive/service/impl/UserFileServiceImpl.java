@@ -1,6 +1,7 @@
 package cn.bvovd.clouddrive.service.impl;
 
 import cn.bvovd.clouddrive.config.CosProperties;
+import cn.bvovd.clouddrive.context.UserContext;
 import cn.bvovd.clouddrive.dto.CreateFolderRequest;
 import cn.bvovd.clouddrive.dto.UploadCredentialRequest;
 import cn.bvovd.clouddrive.entity.DownloadLog;
@@ -11,6 +12,7 @@ import cn.bvovd.clouddrive.mapper.DownloadLogMapper;
 import cn.bvovd.clouddrive.mapper.UserFileMapper;
 import cn.bvovd.clouddrive.mapper.UserMapper;
 import cn.bvovd.clouddrive.service.UserFileService;
+import cn.bvovd.clouddrive.utils.RedisUtil;
 import cn.bvovd.clouddrive.vo.DownloadUrlVo;
 import cn.bvovd.clouddrive.vo.UploadCredentialVo;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -23,17 +25,15 @@ import org.json.JSONObject;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URL;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import java.util.TreeMap;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -45,6 +45,130 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
     private final CosProperties cosProperties;
     private final DownloadLogMapper downloadLogMapper;
     private final COSClient cosClient;
+    private final RedisUtil redisUtil;
+    private static final String SHA_KEY_PREFIX = "file:sha256:";
+
+    @Override
+    public boolean checkSHAQuickUpload(String sha, Long fileSize, Long parentId, String fileName, String mimeType) {
+        Long userId = UserContext.getUserId();
+        String shaKey = SHA_KEY_PREFIX + sha;
+        // 1. 先从 Redis 取（命中即秒传）；Redis 异常时降级，不影响正常上传
+        Map<Object, Object> fileInfo = null;
+        try {
+            fileInfo = redisUtil.getHash(shaKey);
+        } catch (Exception e) {
+            log.warn("Redis 秒传缓存读取失败，降级为普通上传：{}", e.getMessage());
+        }
+        if (fileInfo != null && !fileInfo.isEmpty()) {
+            // Redis 返回泛型为 Object，统一转为 String 键
+            Map<String, Object> info = new HashMap<>();
+            fileInfo.forEach((k, v) -> info.put(String.valueOf(k), v));
+            return doQuickUpload(userId, parentId, fileName, fileSize, info, sha);
+        }
+        // 2. Redis 未命中，查数据库（已上传完成的文件）
+        LambdaQueryWrapper<UserFile> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(UserFile::getFileSha256, sha)
+                .eq(UserFile::getUploadStatus, 1)
+                .eq(UserFile::getIsFolder, false)
+                .last("LIMIT 1");
+        UserFile existFile = userFileMapper.selectOne(wrapper);
+        if (existFile != null) {
+            // 回写 Redis，便于后续秒传直接命中（写失败不影响本次秒传）
+            Map<String, Object> map = new HashMap<>();
+            map.put("storage_path", existFile.getStoragePath());
+            map.put("file_size", existFile.getFileSize());
+            map.put("mime_type", existFile.getMimeType() == null ? "" : existFile.getMimeType());
+            try {
+                redisUtil.setHash(shaKey, map);
+            } catch (Exception e) {
+                log.warn("Redis 秒传缓存回写失败：{}", e.getMessage());
+            }
+            return doQuickUpload(userId, parentId, fileName, fileSize, map, sha);
+        }
+
+        // 3. 未命中任何记录
+        return false;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public boolean doQuickUpload(Long userId, Long parentId, String fileName, Long fileSize,
+                                  Map<String, Object> fileInfo, String sha) {
+        // 1. 校验缓存文件大小与本次上传是否一致（Redis 数字反序列化可能是 Integer，统一转 Long 比较）
+        Object sizeObj = fileInfo.get("file_size");
+        if (sizeObj == null || fileInfo.get("storage_path") == null) {
+            return false; // 缓存数据不完整，需重新上传
+        }
+        Long cacheSize = Long.valueOf(sizeObj.toString());
+        if (!cacheSize.equals(fileSize)) {
+            return false; // 大小不匹配，需重新上传
+        }
+
+        // 2. 校验目录下是否已存在同名文件（与正常上传行为一致）
+        LambdaQueryWrapper<UserFile> nameWrapper = new LambdaQueryWrapper<>();
+        nameWrapper.eq(UserFile::getUserId, userId)
+                .eq(UserFile::getParentId, parentId)
+                .eq(UserFile::getName, fileName)
+                .isNull(UserFile::getDeletedAt);
+        if (this.count(nameWrapper) > 0) {
+            throw new BusinessException("该目录下已存在同名文件，请重命名后再上传");
+        }
+
+        // 3. 校验用户空间是否充足（行锁，防止并发超扣）
+        User user = userMapper.selectByIdForUpdate(userId);
+        if (user == null) {
+            throw new BusinessException("用户不存在");
+        }
+        long remainingSpace = user.getTotalSpace() - user.getUsedSpace();
+        if (remainingSpace < cacheSize) {
+            throw new BusinessException("云盘空间不足，剩余 " + remainingSpace / 1024 / 1024 + "MB，需要 "
+                    + cacheSize / 1024 / 1024 + "MB");
+        }
+
+        // 4. 创建文件记录（直接引用已有存储路径，不重复占用 COS 空间）
+        UserFile userFile = new UserFile();
+        userFile.setUserId(userId);
+        userFile.setParentId(parentId);
+        userFile.setName(fileName);
+        userFile.setIsFolder(false);
+        userFile.setFileSize(cacheSize);
+        userFile.setStoragePath(fileInfo.get("storage_path").toString());
+        userFile.setFileSha256(sha);
+        Object mime = fileInfo.get("mime_type");
+        if (mime != null && !mime.toString().isEmpty()) {
+            userFile.setMimeType(mime.toString());
+        }
+        userFile.setUploadStatus(1); // 已完成
+        userFileMapper.insert(userFile);
+
+        // 5. 扣减用户空间
+        user.setUsedSpace(user.getUsedSpace() + cacheSize);
+        userMapper.updateById(user);
+
+        // 6. 刷新 Redis 秒传缓存（续期 7 天，避免常用文件缓存过期）
+        cacheFileSha(sha, userFile.getStoragePath(), cacheSize, userFile.getMimeType());
+
+        log.info("秒传成功，用户：{}，文件：{}，大小：{}字节", userId, fileName, cacheSize);
+        return true;
+    }
+
+    /**
+     * 上传完成后，写入 Redis（哈希值 → 存储信息，7 天过期避免内存无限增长）
+     * Redis 异常仅记录日志，不阻断上传主流程
+     */
+    public void cacheFileSha(String sha, String storagePath, Long fileSize, String mimeType) {
+        try {
+            String shaKey = SHA_KEY_PREFIX + sha;
+            Map<String, Object> map = new HashMap<>();
+            map.put("storage_path", storagePath);
+            map.put("file_size", fileSize);
+            map.put("mime_type", mimeType == null ? "" : mimeType); // Redis hash 不支持 null 值
+            map.put("upload_time", System.currentTimeMillis());
+            redisUtil.setHash(shaKey, map);
+            redisUtil.setExpire(shaKey, 7, TimeUnit.DAYS);
+        } catch (Exception e) {
+            log.warn("写入秒传缓存失败，sha：{}，原因：{}", sha, e.getMessage());
+        }
+    }
 
 
     @Override
@@ -97,11 +221,19 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         user.setUsedSpace(user.getUsedSpace() + fileSize);
         userMapper.updateById(user);
 
+
         // ========== 6. 生成 COS 存储路径 ==========
-        // 格式：user-files/{userId}/{timestamp}_{uuid}_{原始文件名}
-        String timestamp = String.valueOf(System.currentTimeMillis());
-        String uuid = UUID.randomUUID().toString().substring(0, 8);
-        String cosKey = String.format("user-files/%d/%s_%s_%s", userId, timestamp, uuid, fileName);
+        // 内容寻址：基于 SHA-256 生成路径，相同内容的文件共享同一存储对象（配合秒传去重）
+        // 格式：user-files/sha/{sha256}；无法计算 sha 时退化为 user-files/{userId}/{timestamp}_{uuid}_{fileName}
+        String sha = request.getSha();
+        String cosKey;
+        if (StringUtils.hasText(sha)) {
+            cosKey = String.format("user-files/sha/%s", sha);
+        } else {
+            String timestamp = String.valueOf(System.currentTimeMillis());
+            String uuid = UUID.randomUUID().toString().substring(0, 8);
+            cosKey = String.format("user-files/%d/%s_%s_%s", userId, timestamp, uuid, fileName);
+        }
 
         // ========== 7. 创建文件记录（状态：上传中） ==========
         UserFile tempFile = new UserFile();
@@ -112,6 +244,7 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         tempFile.setIsFolder(false);
         tempFile.setUploadStatus(0); // 0-上传中
         tempFile.setStoragePath(cosKey);
+        tempFile.setFileSha256(request.getSha()); // 前端计算的 SHA-256，上传完成后用于秒传缓存
         this.save(tempFile);
 
         // ========== 8. 调用腾讯云 STS SDK 生成临时密钥 ==========
@@ -407,6 +540,10 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         // 将上传状态改为已完成
         file.setUploadStatus(1);
         this.updateById(file);
+        // 写入 Redis 秒传缓存，供其他用户秒传同一文件
+        if (StringUtils.hasText(file.getFileSha256())) {
+            cacheFileSha(file.getFileSha256(), file.getStoragePath(), file.getFileSize(), file.getMimeType());
+        }
         log.info("上传确认完成，文件ID：{}，用户ID：{}", fileId, userId);
     }
 
@@ -453,7 +590,7 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         folder.setIsFolder(true);
         folder.setFileSize(0L);
         folder.setStoragePath(null);      // 文件夹没有物理路径
-        folder.setFileMd5(null);
+        folder.setFileSha256(null);
         folder.setMimeType(null);
         folder.setDownloadCount(0);
 
@@ -522,6 +659,12 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         List<String> paths = userFileMapper.selectStoragePathsByIds(ids);
         for (String path : paths) {
             if (path == null || path.trim().isEmpty()) continue; // 文件夹没有物理路径
+            // 秒传共享保护：还有其他有效记录引用同一存储对象时，不物理删除（否则会损坏其他用户的文件）
+            Long refCount = userFileMapper.countActiveByStoragePath(path);
+            if (refCount != null && refCount > 0) {
+                log.info("存储对象被其他记录共享，跳过删除：{}", path);
+                continue;
+            }
             try {
                 cosClient.deleteObject(cosProperties.getBucketName(), path);
                 log.info("COS 对象已删除：{}", path);
@@ -604,12 +747,18 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         }
 
         // 1. 清理可能已上传到 COS 的对象（上传失败时对象通常不存在，deleteObject 对不存在的 key 不报错）
+        // 内容寻址后，该路径可能已被其他用户秒传引用：有有效引用时只删记录，不删共享对象
         if (pending.getStoragePath() != null && !pending.getStoragePath().isEmpty()) {
-            try {
-                cosClient.deleteObject(cosProperties.getBucketName(), pending.getStoragePath());
-                log.info("取消上传：COS 对象已清理：{}", pending.getStoragePath());
-            } catch (Exception e) {
-                log.warn("取消上传：COS 对象清理失败：{}，原因：{}", pending.getStoragePath(), e.getMessage());
+            Long refCount = userFileMapper.countActiveByStoragePath(pending.getStoragePath());
+            if (refCount != null && refCount > 0) {
+                log.info("取消上传：存储对象被其他记录共享，跳过删除：{}", pending.getStoragePath());
+            } else {
+                try {
+                    cosClient.deleteObject(cosProperties.getBucketName(), pending.getStoragePath());
+                    log.info("取消上传：COS 对象已清理：{}", pending.getStoragePath());
+                } catch (Exception e) {
+                    log.warn("取消上传：COS 对象清理失败：{}，原因：{}", pending.getStoragePath(), e.getMessage());
+                }
             }
         }
 

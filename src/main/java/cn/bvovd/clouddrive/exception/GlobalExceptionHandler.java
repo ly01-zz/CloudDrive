@@ -8,6 +8,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 全局异常处理器
@@ -37,6 +38,12 @@ public class GlobalExceptionHandler {
         FieldError fieldError = e.getBindingResult().getFieldError();
         String msg = fieldError != null ? fieldError.getDefaultMessage() : "参数校验失败";
         return Result.error(msg);
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public Result<Void> handleNoResourceFoundException(NoResourceFoundException e) {
+        // 未匹配到任何 Controller 的请求（如路径错误），返回 404 提示，避免按系统异常刷 ERROR 日志
+        return Result.error("请求的接口不存在");
     }
 
     @ExceptionHandler(Exception.class)

@@ -34,6 +34,16 @@ public interface ShareService  {
     List<ShareInfoVo> listMyShares(Long userId);
 
     /**
+     * 查询所有分享（管理员用，含创建者信息，最新在前）
+     */
+    List<ShareInfoVo> listAllShares();
+
+    /**
+     * 管理员强制取消分享（置为已取消）
+     */
+    void forceCancelShare(Long shareId);
+
+    /**
      * 取消分享（创建者）
      */
     void cancelShare(Long shareId);

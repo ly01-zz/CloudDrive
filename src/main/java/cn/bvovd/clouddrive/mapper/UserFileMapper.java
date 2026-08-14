@@ -84,4 +84,12 @@ public interface UserFileMapper extends BaseMapper<UserFile> {
             "</foreach>" +
             "</script>")
     List<String> selectStoragePathsByIds(@Param("ids") List<Long> ids);
+
+    /**
+     * 统计引用同一 COS 存储路径的有效文件记录数（秒传共享保护）
+     * 被删除的记录 deleted_at 非空，天然不参与计数
+     */
+    @Select("SELECT COUNT(*) FROM files WHERE storage_path = #{storagePath} " +
+            "AND upload_status = 1 AND deleted_at IS NULL")
+    Long countActiveByStoragePath(@Param("storagePath") String storagePath);
 }
