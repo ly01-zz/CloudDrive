@@ -73,10 +73,11 @@ public class JwtUtil {
     }
     /**
      * 从 Token 中获取身份
+     * 注意：role 存在 claim("role") 中，subject 存的是 userId，不要混用
      */
     public Integer getRoleFromToken(String token) {
         Claims claims = parseToken(token);
-        return Integer.parseInt(claims.getSubject());
+        return claims.get("role", Integer.class);
     }
 
     /**
