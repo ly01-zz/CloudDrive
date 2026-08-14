@@ -1,7 +1,7 @@
 package cn.bvovd.clouddrive.interceptor;
 
 import cn.bvovd.clouddrive.context.UserContext;
-import cn.bvovd.clouddrive.exception.BusinessException;
+import cn.bvovd.clouddrive.exception.UnauthorizedException;
 import cn.bvovd.clouddrive.utils.JwtUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -22,16 +22,14 @@ public class JwtInterceptor implements HandlerInterceptor {
         // 1. 从请求头获取 Token
         String authHeader = request.getHeader("Authorization");
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            throw new BusinessException("未登录或登录已过期");
+            throw new UnauthorizedException("未登录或登录已过期");
         }
 
         String token = authHeader.substring(7);
 
         // 2. 校验 Token 是否有效
         if (!jwtUtil.validateToken(token)) {
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            throw new BusinessException("Token 无效或已过期，请重新登录");
+            throw new UnauthorizedException("Token 无效或已过期，请重新登录");
         }
 
         // 3. 解析 userId
