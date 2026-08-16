@@ -4,6 +4,7 @@ import cn.bvovd.clouddrive.context.UserContext;
 import cn.bvovd.clouddrive.entity.Result;
 import cn.bvovd.clouddrive.entity.SystemConfig;
 import cn.bvovd.clouddrive.exception.BusinessException;
+import cn.bvovd.clouddrive.service.AdminLogService;
 import cn.bvovd.clouddrive.service.SystemConfigService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
@@ -17,6 +18,7 @@ import java.util.List;
 public class AdminConfigController {
 
     private final SystemConfigService systemConfigService;
+    private final AdminLogService adminLogService;
 
     /**
      * 配置项列表
@@ -43,6 +45,8 @@ public class AdminConfigController {
         existing.setConfigValue(config.getConfigValue());
         existing.setDescription(config.getDescription());
         systemConfigService.updateById(existing);
+        adminLogService.record(UserContext.getUserId(), "UPDATE_CONFIG", "config", configKey,
+                "新值:" + config.getConfigValue());
         return Result.success("修改成功");
     }
 
@@ -59,6 +63,8 @@ public class AdminConfigController {
             throw new BusinessException("配置项已存在");
         }
         systemConfigService.save(config);
+        adminLogService.record(UserContext.getUserId(), "ADD_CONFIG", "config", config.getConfigKey(),
+                "值:" + config.getConfigValue());
         return Result.success("新增成功");
     }
 
@@ -69,6 +75,7 @@ public class AdminConfigController {
     public Result<String> delete(@PathVariable String configKey) {
         UserContext.requireAdmin();
         systemConfigService.removeById(configKey);
+        adminLogService.record(UserContext.getUserId(), "DELETE_CONFIG", "config", configKey, null);
         return Result.success("删除成功");
     }
 }

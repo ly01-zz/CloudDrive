@@ -4,6 +4,7 @@ import cn.bvovd.clouddrive.context.UserContext;
 import cn.bvovd.clouddrive.dto.SpaceApproveRequest;
 import cn.bvovd.clouddrive.entity.Result;
 import cn.bvovd.clouddrive.entity.SpaceApplication;
+import cn.bvovd.clouddrive.service.AdminLogService;
 import cn.bvovd.clouddrive.service.SpaceApplicationService;
 import cn.bvovd.clouddrive.vo.AdminSpaceApplicationVo;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class AdminSpaceController {
     private final SpaceApplicationService spaceApplicationService;
+    private final AdminLogService adminLogService;
     @GetMapping("/application")
     public Result<IPage<AdminSpaceApplicationVo>> listApplications(
             @RequestParam(defaultValue = "1") Integer page,
@@ -46,6 +48,8 @@ public class AdminSpaceController {
 
         Long adminId = UserContext.getUserId();
         spaceApplicationService.approveApplication(applicationId, request, adminId);
+        adminLogService.record(adminId, "APPROVE_APPLICATION", "application", String.valueOf(applicationId),
+                "结果:" + (request.getStatus() == 1 ? "通过" : "拒绝") + " " + request.getApproveRemark());
         return Result.success("审批完成");
     }
 }

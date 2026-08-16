@@ -92,4 +92,41 @@ public interface UserFileMapper extends BaseMapper<UserFile> {
     @Select("SELECT COUNT(*) FROM files WHERE storage_path = #{storagePath} " +
             "AND upload_status = 1 AND deleted_at IS NULL")
     Long countActiveByStoragePath(@Param("storagePath") String storagePath);
+
+    /**
+     * 管理端查询单个文件（含已逻辑删除，无用户约束）
+     */
+    @Select("SELECT * FROM files WHERE id = #{id}")
+    UserFile selectAdminById(@Param("id") Long id);
+
+    /**
+     * 管理端分页查询文件（含已逻辑删除）
+     * @param deleted 0-仅正常，1-仅回收站，null-全部
+     */
+    @Select("<script>" +
+            "SELECT * FROM files WHERE 1=1 " +
+            "<if test='keyword != null and keyword != \"\"'> AND name LIKE CONCAT('%', #{keyword}, '%')</if>" +
+            "<if test='userId != null'> AND user_id = #{userId}</if>" +
+            "<if test='isFolder != null'> AND is_folder = #{isFolder}</if>" +
+            "<if test='deleted != null and deleted == 0'> AND deleted_at IS NULL</if>" +
+            "<if test='deleted != null and deleted == 1'> AND deleted_at IS NOT NULL</if>" +
+            " ORDER BY deleted_at IS NOT NULL, created_at DESC LIMIT #{offset}, #{size}" +
+            "</script>")
+    List<UserFile> selectAdminList(@Param("keyword") String keyword, @Param("userId") Long userId,
+                                   @Param("isFolder") Boolean isFolder, @Param("deleted") Integer deleted,
+                                   @Param("offset") int offset, @Param("size") int size);
+
+    /**
+     * 管理端统计文件数量（条件与 selectAdminList 一致）
+     */
+    @Select("<script>" +
+            "SELECT COUNT(*) FROM files WHERE 1=1 " +
+            "<if test='keyword != null and keyword != \"\"'> AND name LIKE CONCAT('%', #{keyword}, '%')</if>" +
+            "<if test='userId != null'> AND user_id = #{userId}</if>" +
+            "<if test='isFolder != null'> AND is_folder = #{isFolder}</if>" +
+            "<if test='deleted != null and deleted == 0'> AND deleted_at IS NULL</if>" +
+            "<if test='deleted != null and deleted == 1'> AND deleted_at IS NOT NULL</if>" +
+            "</script>")
+    Long selectAdminCount(@Param("keyword") String keyword, @Param("userId") Long userId,
+                          @Param("isFolder") Boolean isFolder, @Param("deleted") Integer deleted);
 }

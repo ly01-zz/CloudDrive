@@ -2,6 +2,7 @@ package cn.bvovd.clouddrive.controller;
 
 import cn.bvovd.clouddrive.context.UserContext;
 import cn.bvovd.clouddrive.entity.Result;
+import cn.bvovd.clouddrive.service.AdminLogService;
 import cn.bvovd.clouddrive.service.ShareService;
 import cn.bvovd.clouddrive.vo.ShareInfoVo;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +16,7 @@ import java.util.List;
 public class AdminShareController {
 
     private final ShareService shareService;
+    private final AdminLogService adminLogService;
 
     /**
      * 所有分享列表（含创建者信息，最新在前）
@@ -33,6 +35,7 @@ public class AdminShareController {
     public Result<String> forceCancelShare(@PathVariable Long shareId) {
         UserContext.requireAdmin();
         shareService.forceCancelShare(shareId);
+        adminLogService.record(UserContext.getUserId(), "CANCEL_SHARE", "share", String.valueOf(shareId), null);
         return Result.success("已强制取消");
     }
 }

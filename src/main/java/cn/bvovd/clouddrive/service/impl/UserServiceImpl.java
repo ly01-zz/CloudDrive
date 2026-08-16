@@ -20,6 +20,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +29,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
@@ -302,5 +304,41 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         userFileMapper.insert(rootFolder);  // 也可以用 userFileService.save(rootFolder)
 
         return user;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void resetTraffic(Long userId, String reason) {
+        User user = this.getById(userId);
+        if (user == null) {
+            throw new BusinessException("用户不存在");
+        }
+        user.setUsedDownloadTraffic(0L);
+        userMapper.updateById(user);
+        log.info("管理员重置用户下载流量，用户ID：{}，原因：{}", userId, reason);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateQuota(Long userId, Long totalSpace, Long monthlyDownloadLimit) {
+        User user = this.getById(userId);
+        if (user == null) {
+            throw new BusinessException("用户不存在");
+        }
+        if (totalSpace != null) {
+            if (totalSpace < user.getUsedSpace()) {
+                throw new BusinessException("总空间不能小于用户已用空间（" + user.getUsedSpace() + " 字节）");
+            }
+            user.setTotalSpace(totalSpace);
+        }
+        if (monthlyDownloadLimit != null) {
+            if (monthlyDownloadLimit < user.getUsedDownloadTraffic()) {
+                throw new BusinessException("月度流量不能小于用户已用流量（" + user.getUsedDownloadTraffic() + " 字节）");
+            }
+            user.setMonthlyDownloadLimit(monthlyDownloadLimit);
+        }
+        userMapper.updateById(user);
+        log.info("管理员调整用户配额，用户ID：{}，总空间：{}，月度流量：{}",
+                userId, totalSpace, monthlyDownloadLimit);
     }
 }

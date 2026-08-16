@@ -29,4 +29,10 @@ public interface UserService extends IService<User> {
 
     /** 获取当前登录用户的完整信息（脱敏），用于前端刷新空间/流量等数据 */
     User getUserInfo(Long userId);
+
+    /** 重置用户本月下载流量为 0（管理员，应对异常扣减/补偿） */
+    void resetTraffic(Long userId, String reason);
+
+    /** 调整用户空间/月度流量配额（管理员） */
+    void updateQuota(Long userId, Long totalSpace, Long monthlyDownloadLimit);
 }

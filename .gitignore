@@ -4,7 +4,10 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 src/main/resources/application.properties
-src/main/resources/application.yml
+# application.yml 已环境变量化（不含真实密钥），纳入版本控制供 Docker 构建使用
+
+# 部署密钥（严禁提交）
+.env
 ### STS ###
 .apt_generated
 .classpath
