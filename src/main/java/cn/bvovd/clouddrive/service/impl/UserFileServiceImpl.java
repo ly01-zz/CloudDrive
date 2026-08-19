@@ -12,6 +12,7 @@ import cn.bvovd.clouddrive.mapper.DownloadLogMapper;
 import cn.bvovd.clouddrive.mapper.UserFileMapper;
 import cn.bvovd.clouddrive.mapper.UserMapper;
 import cn.bvovd.clouddrive.service.UserFileService;
+import cn.bvovd.clouddrive.utils.CosCleanupUtil;
 import cn.bvovd.clouddrive.utils.RedisUtil;
 import cn.bvovd.clouddrive.vo.DownloadUrlVo;
 import cn.bvovd.clouddrive.vo.UploadCredentialVo;
@@ -46,6 +47,7 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
     private final DownloadLogMapper downloadLogMapper;
     private final COSClient cosClient;
     private final RedisUtil redisUtil;
+    private final CosCleanupUtil cosCleanupUtil;
     private static final String SHA_KEY_PREFIX = "file:sha256:";
 
     @Override
@@ -457,18 +459,20 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
 
         // ========== 权限策略（Policy）—— 核心安全控制 ==========
         // 从存储桶名中提取 APPID（格式：bucketName-appid，如 mycloud-1250000000）
+        // 注意：先 trim 再解析——环境变量配置值可能带尾随空格/换行等不可见字符，
+        // 直接 split 会导致 APPID 段混入空白导致误判（用户曾因此报"APPID 必须为纯数字"）
         String bucketName = cosProperties.getBucketName();
         if (bucketName == null || bucketName.trim().isEmpty()) {
             throw new BusinessException("COS 存储桶名称未配置（tencent.cos.bucket-name）");
         }
-        String[] bucketParts = bucketName.split("-");
-        if (bucketParts.length < 2) {
-            throw new BusinessException("COS 存储桶名称格式错误，应为「存储桶名-APPID」，如 mycloud-1250000000");
+        bucketName = bucketName.trim();
+        // 从字符串末尾提取纯数字 APPID（\s*$ 吸收尾随空白，兼容任何前缀格式）
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)\\s*$").matcher(bucketName);
+        if (!matcher.find()) {
+            throw new BusinessException("COS 存储桶名称格式错误，应为「存储桶名-APPID」，如 mycloud-1250000000，当前配置："
+                    + bucketName + "（长度" + bucketName.length() + "）");
         }
-        String appId = bucketParts[bucketParts.length - 1];
-        if (!appId.matches("\\d+")) {
-            throw new BusinessException("COS 存储桶名称格式错误，APPID 必须为纯数字，当前配置：" + bucketName);
-        }
+        String appId = matcher.group(1);
 
         // 构建资源路径：qcs::cos:{region}:uid/{appId}:{bucketName}/{cosKey}
         String resource = String.format(
@@ -642,36 +646,12 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
         // 递归收集自身 + 所有子孙 ID（含已逻辑删除的，用 WITH RECURSIVE 一次查询）
         List<Long> ids = userFileMapper.selectDescendantIdsIncludingDeleted(fileId, userId);
 
-        // 1. 先删除 COS 存储对象（文件夹无 storagePath 自动跳过）
-        deleteCosObjects(ids);
+        // 1. 先删除 COS 存储对象（带秒传共享保护，文件夹无 storagePath 自动跳过）
+        cosCleanupUtil.deleteObjectsIfUnshared(ids);
 
         // 2. 物理删除数据库记录（自定义 SQL，绕过逻辑删除拦截器）
         userFileMapper.physicalDeleteByIds(ids);
         log.info("永久删除成功，用户：{}，文件ID：{}，级联数量：{}", userId, fileId, ids.size());
-    }
-
-    /**
-     * 批量删除 COS 存储对象
-     * 尽力而为：单个对象删除失败仅记录日志，不阻断数据库删除（避免删除操作永远失败）
-     */
-    private void deleteCosObjects(List<Long> ids) {
-        if (ids == null || ids.isEmpty()) return;
-        List<String> paths = userFileMapper.selectStoragePathsByIds(ids);
-        for (String path : paths) {
-            if (path == null || path.trim().isEmpty()) continue; // 文件夹没有物理路径
-            // 秒传共享保护：还有其他有效记录引用同一存储对象时，不物理删除（否则会损坏其他用户的文件）
-            Long refCount = userFileMapper.countActiveByStoragePath(path);
-            if (refCount != null && refCount > 0) {
-                log.info("存储对象被其他记录共享，跳过删除：{}", path);
-                continue;
-            }
-            try {
-                cosClient.deleteObject(cosProperties.getBucketName(), path);
-                log.info("COS 对象已删除：{}", path);
-            } catch (Exception e) {
-                log.warn("COS 对象删除失败：{}，原因：{}", path, e.getMessage());
-            }
-        }
     }
 
     /**
@@ -748,19 +728,7 @@ public class UserFileServiceImpl extends ServiceImpl<UserFileMapper,UserFile> im
 
         // 1. 清理可能已上传到 COS 的对象（上传失败时对象通常不存在，deleteObject 对不存在的 key 不报错）
         // 内容寻址后，该路径可能已被其他用户秒传引用：有有效引用时只删记录，不删共享对象
-        if (pending.getStoragePath() != null && !pending.getStoragePath().isEmpty()) {
-            Long refCount = userFileMapper.countActiveByStoragePath(pending.getStoragePath());
-            if (refCount != null && refCount > 0) {
-                log.info("取消上传：存储对象被其他记录共享，跳过删除：{}", pending.getStoragePath());
-            } else {
-                try {
-                    cosClient.deleteObject(cosProperties.getBucketName(), pending.getStoragePath());
-                    log.info("取消上传：COS 对象已清理：{}", pending.getStoragePath());
-                } catch (Exception e) {
-                    log.warn("取消上传：COS 对象清理失败：{}，原因：{}", pending.getStoragePath(), e.getMessage());
-                }
-            }
-        }
+        cosCleanupUtil.deleteObjectsIfUnshared(List.of(fileId));
 
         // 2. 物理删除文件记录（未确认的记录直接删除，不走回收站）
         userFileMapper.physicalDeleteByIds(List.of(fileId));

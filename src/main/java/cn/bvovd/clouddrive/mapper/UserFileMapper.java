@@ -129,4 +129,16 @@ public interface UserFileMapper extends BaseMapper<UserFile> {
             "</script>")
     Long selectAdminCount(@Param("keyword") String keyword, @Param("userId") Long userId,
                           @Param("isFolder") Boolean isFolder, @Param("deleted") Integer deleted);
+
+    /**
+     * 查询回收站中已超过指定天数未清理的文件记录 ID（回收站定时清理任务调用）
+     * 只返回"根记录"，子孙文件通过 selectDescendantIdsIncludingDeleted 递归收集
+     *
+     * @param days 超过该天数即视为过期（如 15 天）
+     * @return 过期的文件记录 ID 列表
+     */
+    @Select("SELECT id FROM files " +
+            "WHERE deleted_at IS NOT NULL " +
+            "AND deleted_at < DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    List<Long> selectExpiredRecycleIds(@Param("days") int days);
 }
